@@ -1,0 +1,19 @@
+<template>
+    <lightning-card title="Account List">
+        <template if:true={visibleAccounts}>
+            <lightning-datatable
+                key-field="Id"
+                data={visibleAccounts}
+                columns={columns}>
+            </lightning-datatable>
+            <div class="slds-m-top_medium slds-align_absolute-center">
+                <lightning-button label="Previous" onclick={handlePrevious} disabled={isFirstPage}></lightning-button>
+                <span class="slds-m-horizontal_small"> Page {page} of {totalPages} </span>
+                <lightning-button label="Next" onclick={handleNext} disabled={isLastPage}></lightning-button>
+            </div>
+        </template>
+        <template if:false={visibleAccounts}>
+            <p>No accounts found.</p>
+        </template>
+    </lightning-card>
+</template>
