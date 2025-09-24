@@ -1,9 +1,9 @@
 {
-  "servers": {
+  "mcpServers": {
     "Salesforce": {
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@salesforce/mcp", "--orgs", "DEFAULT_TARGET_ORG", "--toolsets", "all"]
+      "args": ["-y", "@salesforce/mcp", "--orgs", "lwcprac org", "--toolsets", "all"]
     }
   }
 }

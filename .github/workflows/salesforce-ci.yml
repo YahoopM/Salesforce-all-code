@@ -1,0 +1,143 @@
+name: Salesforce CI/CD
+
+on:
+  pull_request:
+    paths:
+      - 'force-app/**'
+      - 'sfdx-project.json'
+      - 'manifest/**'
+  workflow_dispatch:
+    inputs:
+      runTests:
+        description: 'Run Apex tests (RunLocalTests)'
+        required: true
+        default: 'true'
+
+jobs:
+  deploy:
+    name: Validate and Deploy to Salesforce
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    env:
+      SF_ORG_ALIAS: ci-org
+      RUN_TESTS: ${{ inputs.runTests || 'true' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Salesforce CLI
+        run: npm install --global @salesforce/cli
+
+      - name: Write SFDX auth URL to file
+        if: ${{ secrets.SFDX_AUTH_URL != '' }}
+        run: |
+          echo "$SFDX_AUTH_URL" > sfdx-url.txt
+        env:
+          SFDX_AUTH_URL: ${{ secrets.SFDX_AUTH_URL }}
+
+      - name: Authenticate to Org via SFDX URL
+        if: ${{ secrets.SFDX_AUTH_URL != '' }}
+        run: |
+          sf org login sfdx-url --sfdx-url-file sfdx-url.txt --alias "$SF_ORG_ALIAS" --set-default
+
+      - name: Authenticate to Org via JWT (fallback)
+        if: ${{ secrets.SFDX_AUTH_URL == '' && secrets.SF_CONSUMER_KEY != '' }}
+        env:
+          SF_USERNAME: ${{ secrets.SF_USERNAME }}
+          SF_CONSUMER_KEY: ${{ secrets.SF_CONSUMER_KEY }}
+          SF_JWT_KEY: ${{ secrets.SF_JWT_KEY }}
+        run: |
+          echo "$SF_JWT_KEY" > server.key
+          sf org login jwt --username "$SF_USERNAME" --jwt-key-file server.key --client-id "$SF_CONSUMER_KEY" --alias "$SF_ORG_ALIAS" --set-default
+
+      - name: Verify Auth
+        run: sf org display --target-org "$SF_ORG_ALIAS" --verbose
+
+      - name: Deploy source (check-only on PRs)
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          if [ "$RUN_TESTS" = "true" ]; then
+            sf project deploy start \
+              --target-org "$SF_ORG_ALIAS" \
+              --test-level RunLocalTests \
+              --manifest manifest/package.xml \
+              --ignore-warnings \
+              --dry-run \
+              --wait 60
+          else
+            sf project deploy start \
+              --target-org "$SF_ORG_ALIAS" \
+              --test-level NoTestRun \
+              --manifest manifest/package.xml \
+              --ignore-warnings \
+              --dry-run \
+              --wait 60
+          fi
+
+      - name: Generate deploy summary
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          sf deploy report --use-most-recent --target-org "$SF_ORG_ALIAS" > deploy-summary.md || echo "See workflow logs for details" > deploy-summary.md
+
+      - name: Deploy source (merge to default branch)
+        if: ${{ github.event_name != 'pull_request' }}
+        run: |
+          if [ "$RUN_TESTS" = "true" ]; then
+            sf project deploy start \
+              --target-org "$SF_ORG_ALIAS" \
+              --test-level RunLocalTests \
+              --manifest manifest/package.xml \
+              --ignore-warnings \
+              --wait 60
+          else
+            sf project deploy start \
+              --target-org "$SF_ORG_ALIAS" \
+              --test-level NoTestRun \
+              --manifest manifest/package.xml \
+              --ignore-warnings \
+              --wait 60
+          fi
+
+      - name: Post comment with deploy summary
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          recreate: true
+          path: deploy-summary.md
+        continue-on-error: true
+
+      - name: Update Jira status (optional)
+        if: ${{ success() && (secrets.JIRA_BASE_URL != '' && secrets.JIRA_EMAIL != '' && secrets.JIRA_API_TOKEN != '') }}
+        env:
+          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        run: |
+          branch="${GITHUB_HEAD_REF:-${GITHUB_REF#refs/heads/}}"
+          # Expect branch like feature/JIRA-123-something
+          if echo "$branch" | grep -Eo '[A-Z]+-[0-9]+' > /dev/null; then
+            key=$(echo "$branch" | grep -Eo '[A-Z]+-[0-9]+' | head -1)
+            echo "Detected Jira key: $key"
+            # Transition name can be overridden with env var JIRA_TRANSITION (e.g., "In QA" or "Done")
+            transitionName="${JIRA_TRANSITION:-In QA}"
+            # Find transition id by name
+            transitions=$(curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -X GET -H 'Accept: application/json' "$JIRA_BASE_URL/rest/api/3/issue/$key/transitions")
+            id=$(echo "$transitions" | node -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);const t=j.transitions.find(x=>x.name.toLowerCase()===process.argv[1].toLowerCase());if(t)console.log(t.id);});" "$transitionName")
+            if [ -n "$id" ]; then
+              curl -s -u "$JIRA_EMAIL:$JIRA_API_TOKEN" -X POST -H 'Content-Type: application/json' --data "{\"transition\":{\"id\":\"$id\"}}" "$JIRA_BASE_URL/rest/api/3/issue/$key/transitions"
+              echo "Transitioned $key to $transitionName"
+            else
+              echo "Could not find Jira transition named $transitionName; skipping"
+            fi
+          else
+            echo "No Jira key found in branch name; skipping Jira update"
+          fi
+
+

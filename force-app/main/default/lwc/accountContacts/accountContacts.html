@@ -1,0 +1,24 @@
+<template>
+    <lightning-card title="Account Contacts" icon-name="standard:contact">
+        <template if:true={isLoading}>
+            <lightning-spinner alternative-text="Loading" size="small"></lightning-spinner>
+        </template>
+
+        <template if:true={rows}>
+            <lightning-datatable key-field="Id" data={rows} columns={columns} hide-checkbox-column>
+            </lightning-datatable>
+        </template>
+
+        <template if:true={hasNoData}>
+            <div class="slds-p-around_small slds-text-color_weak">No contacts found.</div>
+        </template>
+    </lightning-card>
+</template>
+
+
+
+
+
+
+
+
